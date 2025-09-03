@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+transformers
+torch
+faiss-cpu
+pydantic
+python-multipart
+pypdf
+python-docx
+pdf2image
+pillow
+pytesseract
+networkx
+langchain
+python-dotenv

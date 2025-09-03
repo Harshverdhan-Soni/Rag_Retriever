@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.env.*
+*.joblib
+chroma_db/
+
+
+# Node
+node_modules/
+frontend/node_modules/
+dist/
+
+
+# OS
+.DS_Store
+Thumbs.db
