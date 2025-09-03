@@ -8,6 +8,10 @@ from langchain.chains import RetrievalQA
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from transformers import pipeline
+import time
+from langchain.prompts import PromptTemplate
+from transformers import pipeline
+
 
 app = FastAPI()
 
@@ -24,16 +28,24 @@ app.add_middleware(
 # Embeddings
 embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
+
+
 # Local LLM
+# Deterministic, instruction-following model (CPU-friendly)
 generator = pipeline(
-    "text-generation",
-    model="HuggingFaceH4/zephyr-7b-alpha",  # change if GPU available
+    task="text2text-generation",
+    model="google/flan-t5-base",   # or "google/flan-t5-large" if you have RAM
     device_map="auto",
-    max_new_tokens=512,
-    do_sample=True,
-    temperature=0.7,
+    max_new_tokens=128
 )
 llm = HuggingFacePipeline(pipeline=generator)
+
+QA_TEMPLATE = """You are a concise, factual assistant.
+Use ONLY the context below. If the answer is not in the context, say "I don't know".
+Context:{context}
+Question: {question}
+Answer:"""
+qa_prompt = PromptTemplate(template=QA_TEMPLATE, input_variables=["context", "question"])
 
 # Store QA chains per PDF
 qa_chains = {}
@@ -48,31 +60,30 @@ async def upload_file(file: UploadFile):
     # Load and split PDF
     loader = PyPDFLoader(temp_path)
     docs = loader.load()
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=150)
     chunks = splitter.split_documents(docs)
 
     # Create FAISS DB
     db = FAISS.from_documents(chunks, embeddings)
     db.save_local(f"vectorstore_{file_id}")
 
-    # Create QA chain
+    # Create QA chain with strict prompt
     qa_chain = RetrievalQA.from_chain_type(
         llm=llm,
         retriever=db.as_retriever(search_kwargs={"k": 3}),
         return_source_documents=True,
+        chain_type="stuff",
+        chain_type_kwargs={"prompt": qa_prompt},
     )
     qa_chains[file_id] = qa_chain
 
     os.remove(temp_path)
 
-    # Return file_id so frontend can query
     return {"status": "Ingestion done", "file_id": file_id}
-
 
 @app.post("/ask")
 async def ask_question(question: str = Form(...), file_id: str = Form(...)):
     try:
-        # If chain not already created for this file_id, build it
         if file_id not in qa_chains:
             print(f"Loading vectorstore for file_id={file_id}...")
             db = FAISS.load_local(
@@ -84,21 +95,28 @@ async def ask_question(question: str = Form(...), file_id: str = Form(...)):
                 llm=llm,
                 retriever=db.as_retriever(search_kwargs={"k": 3}),
                 return_source_documents=True,
+                chain_type="stuff",
+                chain_type_kwargs={"prompt": qa_prompt},
             )
-            print("QA chain created")
             qa_chains[file_id] = qa_chain
         else:
             qa_chain = qa_chains[file_id]
-            print(f"ℹUsing cached QA chain for file_id={file_id}")
 
-        # Run the chain
         print(f"Running query: {question}")
+        start = time.time()
         result = qa_chain.invoke({"query": question})
-        print("Query completed")
+        print(f"Query completed in {time.time() - start:.2f} seconds")
+
+        answer = result.get("result", "").strip()
+        sources = [doc.metadata.get("source") for doc in result["source_documents"]]
+
+        # If no sources OR answer looks empty => return "I don't know"
+        if not sources or not answer or answer.lower() in ["", "unknown", "i don't know"]:
+            answer = "I don't know"
 
         return {
-            "answer": result["result"],
-            "sources": [doc.metadata.get("source") for doc in result["source_documents"]],
+            "answer": answer,
+            "sources": sources,
         }
 
     except Exception as e:
@@ -107,4 +125,3 @@ async def ask_question(question: str = Form(...), file_id: str = Form(...)):
             "answer": "Error occurred while processing your query.",
             "sources": []
         }
-
