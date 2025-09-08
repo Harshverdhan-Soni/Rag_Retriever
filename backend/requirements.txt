@@ -12,4 +12,7 @@ pillow
 pytesseract
 networkx
 langchain
+langchain-community
+langchain-huggingface
 python-dotenv
+sentence-transformers
